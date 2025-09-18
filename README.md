@@ -1,7 +1,10 @@
 # Sample Gap Filler s Quality-Aware Algoritmem
 
 ## Popis
-Tento program doplňuje chybějící audio vzorky hudebních nástrojů transpozicí z nejbližších dostupných vzorků. Používá quality-aware algoritmus založený na Paretově pravidle: analyzuje kvalitu not podle počtu vzorků (více vzorků = lepší kvalita) a transponuje pouze z kvalitních zdrojů. Navazuje na nástroj Pitch Corrector a sdílí principy zpracování audio (simple pitch shifting pomocí resample).
+Tento program doplňuje chybějící audio vzorky hudebních nástrojů transpozicí z nejbližších dostupných vzorků. 
+Používá quality-aware algoritmus založený na Paretově pravidle: 
+analyzuje kvalitu not podle počtu vzorků (více vzorků = lepší kvalita) a transponuje pouze z kvalitních zdrojů. 
+Navazuje na nástroj Pitch Corrector a sdílí principy zpracování audio (simple pitch shifting pomocí resample).
 
 Klíčové funkce:
 - Skenování existujících WAV souborů v specifickém formátu: `m{midi:03d}-vel{velocity}-f{44|48}[-next{N}].wav`.
@@ -10,8 +13,6 @@ Klíčové funkce:
 - Generování chybějících vzorků transpozicí (±1 až ±3 půltóny, priorita dolů).
 - Kopírování kvalitních originálních vzorků do výstupu.
 - Report chybějících/vyloučených vzorků v `missing-notes.txt`.
-
-Program je určen pro přípravu vzorků pro IthacaSampler. Autor: Doplňkový program pro IthacaSampler. Datum: 2025.
 
 ## Požadavky
 - Python 3.12+
