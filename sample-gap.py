@@ -1,10 +1,10 @@
 """
 Program pro doplňování chybějících vzorků hudebních nástrojů
-transpozicí z nejbližších dostupných vzorků.
+transpozicí z nejbližších dostupných vzorků s quality-aware algoritmem.
 
 Navazuje na Pitch Corrector a používá stejné principy zpracování.
 
-Autor: Doplňkový program pro IthacaSampler
+Autor: Doplňkový program pro IthacaSampler s kvalitní analýzou
 Datum: 2025
 """
 
@@ -17,7 +17,7 @@ from pathlib import Path
 from tqdm import tqdm
 import re
 import sys
-
+import shutil
 
 class ProgressManager:
     """Správce progress barů a výstupu"""
@@ -149,25 +149,103 @@ class SimplePitchShifter:
 class SampleInfo:
     """Container pro informace o vzorku"""
 
-    def __init__(self, filepath, midi, velocity, sample_rate):
+    def __init__(self, filepath, midi, velocity, sample_rate, is_duplicate=False, duplicate_index=0):
         self.filepath = Path(filepath)
         self.midi = midi
         self.velocity = velocity
         self.sample_rate = sample_rate
         self.note_name = AudioUtils.midi_to_note_name(midi)
+        self.is_duplicate = is_duplicate
+        self.duplicate_index = duplicate_index  # 0 = originál, 1 = -next1, atd.
 
     def __str__(self):
-        return f"MIDI {self.midi} ({self.note_name}) vel{self.velocity} @ {self.sample_rate}Hz"
+        dup_info = f" (dup-{self.duplicate_index})" if self.is_duplicate else ""
+        return f"MIDI {self.midi} ({self.note_name}) vel{self.velocity} @ {self.sample_rate}Hz{dup_info}"
+
+
+class QualityAnalyzer:
+    """Analýza kvality vzorků na základě počtu verzí každé MIDI noty"""
+
+    def __init__(self, progress_mgr=None):
+        self.progress_mgr = progress_mgr or ProgressManager()
+
+    def analyze_note_quality(self, samples_by_midi, quality_threshold=0.8):
+        """
+        Analýza kvality not na základě počtu vzorků.
+        Více vzorků = lepší kvalita (uživatel častěji samploval)
+
+        Args:
+            samples_by_midi: Dict {midi: [SampleInfo, ...]}
+            quality_threshold: Paretovo pravidlo (0.8 = vyřadí spodních 20%)
+
+        Returns:
+            (good_midi_notes, excluded_midi_notes, quality_stats)
+        """
+        self.progress_mgr.section("KVALITNÍ ANALÝZA VZORKŮ")
+
+        # Spočítej vzorky pro každou MIDI notu (včetně duplicitů)
+        midi_sample_counts = {}
+        for midi, samples in samples_by_midi.items():
+            total_samples = len(samples)  # Včetně duplicitů (-next1, -next2, atd.)
+            midi_sample_counts[midi] = total_samples
+
+        if not midi_sample_counts:
+            return set(), set(), {}
+
+        # Výpočet mediánu a statistik
+        sample_counts = list(midi_sample_counts.values())
+        median_samples = np.median(sample_counts)
+        min_samples = min(sample_counts)
+        max_samples = max(sample_counts)
+
+        self.progress_mgr.info(f"Statistiky vzorků na notu:")
+        self.progress_mgr.info(f"  Min: {min_samples}, Medián: {median_samples:.1f}, Max: {max_samples}")
+
+        # Seřazení not podle kvality (více vzorků = lepší)
+        sorted_notes = sorted(midi_sample_counts.items(), key=lambda x: x[1], reverse=True)
+
+        # Paretovo pravidlo - vyřaď spodní (1 - quality_threshold) procent
+        total_notes = len(sorted_notes)
+        keep_count = int(total_notes * quality_threshold)
+        exclude_count = total_notes - keep_count
+
+        good_notes = set(midi for midi, _ in sorted_notes[:keep_count])
+        excluded_notes = set(midi for midi, _ in sorted_notes[keep_count:])
+
+        self.progress_mgr.info(f"Paretovo pravidlo ({quality_threshold*100:.0f}%):")
+        self.progress_mgr.info(f"  Kvalitní noty: {len(good_notes)} (zachováno)")
+        self.progress_mgr.info(f"  Vyloučené noty: {len(excluded_notes)} (nepoužijí se pro klonování)")
+
+        # Detailní statistiky pro verbose režim
+        if self.progress_mgr.verbose:
+            print(f"\nVyloučené noty (méně vzorků = horší kvalita):")
+            for midi in sorted(excluded_notes):
+                count = midi_sample_counts[midi]
+                note_name = AudioUtils.midi_to_note_name(midi)
+                print(f"  MIDI {midi} ({note_name}): {count} vzorků")
+
+        quality_stats = {
+            'median': median_samples,
+            'min': min_samples,
+            'max': max_samples,
+            'total_notes': total_notes,
+            'good_count': len(good_notes),
+            'excluded_count': len(excluded_notes)
+        }
+
+        return good_notes, excluded_notes, quality_stats
 
 
 class SampleGapFiller:
     """
-    Hlavní třída pro doplňování chybějících vzorků transpozicí z nejbližších.
+    Hlavní třída pro doplňování chybějících vzorků transpozicí z nejbližších
+    s quality-aware algoritmem.
     """
 
-    def __init__(self, input_dir, output_dir, verbose=False):
+    def __init__(self, input_dir, output_dir, quality_threshold=0.8, verbose=False):
         self.input_dir = Path(input_dir)
         self.output_dir = Path(output_dir)
+        self.quality_threshold = quality_threshold
         self.verbose = verbose
 
         # Konstanty
@@ -187,13 +265,17 @@ class SampleGapFiller:
         # Inicializace komponent
         self.progress_mgr = ProgressManager(verbose=verbose)
         self.pitch_shifter = SimplePitchShifter(progress_mgr=self.progress_mgr)
+        self.quality_analyzer = QualityAnalyzer(progress_mgr=self.progress_mgr)
 
         # Regex pro parsování názvů souborů
-        # Očekává formát: m{midi:03d}-vel{velocity}-f{sample_rate}.wav
-        self.filename_pattern = re.compile(r'm(\d{3})-vel(\d+)-f(\d+)\.wav$', re.IGNORECASE)
+        # Formát: m{midi:03d}-vel{velocity}-f{44|48}[-next{N}].wav
+        self.filename_pattern = re.compile(
+            r'm(\d{3})-vel(\d+)-f(44|48)(?:-next(\d+))?\.wav$',
+            re.IGNORECASE
+        )
 
     def parse_filename(self, filepath):
-        """Parsování informací z názvu souboru"""
+        """Parsování informací z názvu souboru včetně duplicitů"""
         match = self.filename_pattern.match(filepath.name)
         if not match:
             return None
@@ -201,7 +283,16 @@ class SampleGapFiller:
         try:
             midi = int(match.group(1))
             velocity = int(match.group(2))
-            sample_rate = int(match.group(3))
+            sr_str = match.group(3)
+            next_index_str = match.group(4)  # None pokud není -next
+
+            # Mapování zkráceného formátu na plnou hodnotu sample rate
+            if sr_str == '44':
+                sample_rate = 44100
+            elif sr_str == '48':
+                sample_rate = 48000
+            else:
+                return None
 
             # Validace rozsahů
             if not (0 <= midi <= 127):
@@ -211,27 +302,35 @@ class SampleGapFiller:
             if sample_rate not in [44100, 48000]:
                 return None
 
-            return SampleInfo(filepath, midi, velocity, sample_rate)
+            # Detekce duplicitu
+            is_duplicate = next_index_str is not None
+            duplicate_index = int(next_index_str) if next_index_str else 0
+
+            return SampleInfo(filepath, midi, velocity, sample_rate, is_duplicate, duplicate_index)
 
         except (ValueError, IndexError):
             return None
 
     def scan_existing_samples(self):
-        """Fáze 1: Skenování existujících vzorků"""
+        """Fáze 1: Skenování existujících vzorků s podporou duplicitů"""
         self.progress_mgr.section("FÁZE 1: Skenování existujících vzorků")
 
         wav_files = list(self.input_dir.glob("*.wav")) + list(self.input_dir.glob("*.WAV"))
 
         if not wav_files:
             self.progress_mgr.error("Nebyly nalezeny žádné WAV soubory!")
-            return {}
+            return {}, {}
 
         self.progress_mgr.info(f"Nalezeno {len(wav_files)} WAV souborů")
 
         # Index: (midi, velocity, sample_rate) -> SampleInfo
         existing_samples = {}
+        # Index pro kvalitní analýzu: midi -> [SampleInfo, ...]
+        samples_by_midi = defaultdict(list)
 
         iterator = wav_files if self.verbose else tqdm(wav_files, desc="Skenuji soubory", unit="soubor")
+
+        duplicates_found = 0
 
         for filepath in iterator:
             sample_info = self.parse_filename(filepath)
@@ -240,13 +339,23 @@ class SampleGapFiller:
                 self.progress_mgr.warning(f"Nerozpoznaný formát názvu: {filepath.name}")
                 continue
 
+            # Přidej do hlavního indexu
             key = (sample_info.midi, sample_info.velocity, sample_info.sample_rate)
             existing_samples[key] = sample_info
+
+            # Přidej do MIDI indexu pro kvalitní analýzu
+            samples_by_midi[sample_info.midi].append(sample_info)
+
+            if sample_info.is_duplicate:
+                duplicates_found += 1
 
             self.progress_mgr.debug(f"Indexován: {sample_info}")
 
         self.progress_mgr.info(f"Úspěšně indexováno {len(existing_samples)} vzorků")
-        return existing_samples
+        self.progress_mgr.info(f"Z toho duplicitů (-next): {duplicates_found}")
+        self.progress_mgr.info(f"Unikátních MIDI not: {len(samples_by_midi)}")
+
+        return existing_samples, dict(samples_by_midi)
 
     def analyze_coverage(self, existing_samples):
         """Fáze 2: Analýza pokrytí MIDI rozsahu"""
@@ -277,42 +386,44 @@ class SampleGapFiller:
 
         return missing_samples
 
-    def find_source_sample(self, target_midi, target_velocity, target_sr, existing_samples):
+    def find_source_sample(self, target_midi, target_velocity, target_sr, existing_samples, good_midi_notes):
         """
         Nalezení nejbližšího existujícího vzorku pro transpozici.
         Priorita: stejný velocity, nejbližší MIDI (dolů má prioritu), stejný sample rate.
+        POUZE z kvalitních not (good_midi_notes).
         """
         # Nejdřív hledáme ve stejném sample rate
-        candidates = []
-
-        # Procházíme vzdálenosti: -1, -2, -3, +1, +2, +3
         for distance in range(1, self.MAX_TRANSPOSE_DISTANCE + 1):
             # Nejdřív dolů (priorita)
             source_midi = target_midi - distance
-            key = (source_midi, target_velocity, target_sr)
-            if key in existing_samples:
-                return existing_samples[key], -distance
+            if source_midi in good_midi_notes:  # KONTROLA KVALITY
+                key = (source_midi, target_velocity, target_sr)
+                if key in existing_samples:
+                    return existing_samples[key], -distance
 
             # Pak nahoru
             source_midi = target_midi + distance
-            key = (source_midi, target_velocity, target_sr)
-            if key in existing_samples:
-                return existing_samples[key], distance
+            if source_midi in good_midi_notes:  # KONTROLA KVALITY
+                key = (source_midi, target_velocity, target_sr)
+                if key in existing_samples:
+                    return existing_samples[key], distance
 
         # Pokud nenajdeme ve stejném sample rate, zkusíme druhý
         other_sr = 48000 if target_sr == 44100 else 44100
         for distance in range(1, self.MAX_TRANSPOSE_DISTANCE + 1):
             # Nejdřív dolů
             source_midi = target_midi - distance
-            key = (source_midi, target_velocity, other_sr)
-            if key in existing_samples:
-                return existing_samples[key], -distance
+            if source_midi in good_midi_notes:  # KONTROLA KVALITY
+                key = (source_midi, target_velocity, other_sr)
+                if key in existing_samples:
+                    return existing_samples[key], -distance
 
             # Pak nahoru
             source_midi = target_midi + distance
-            key = (source_midi, target_velocity, other_sr)
-            if key in existing_samples:
-                return existing_samples[key], distance
+            if source_midi in good_midi_notes:  # KONTROLA KVALITY
+                key = (source_midi, target_velocity, other_sr)
+                if key in existing_samples:
+                    return existing_samples[key], distance
 
         return None, 0
 
@@ -361,8 +472,8 @@ class SampleGapFiller:
         sr_suffix = 'f44' if sample_rate == 44100 else 'f48'
         return f"m{midi:03d}-vel{velocity}-{sr_suffix}.wav"
 
-    def fill_gaps(self, missing_samples, existing_samples):
-        """Fáze 3: Doplňování chybějících vzorků"""
+    def fill_gaps(self, missing_samples, existing_samples, good_midi_notes, excluded_midi_notes):
+        """Fáze 3: Doplňování chybějících vzorků (pouze z kvalitních zdrojů)"""
         self.progress_mgr.section("FÁZE 3: Generování chybějících vzorků")
 
         if not missing_samples:
@@ -371,6 +482,7 @@ class SampleGapFiller:
 
         generated_count = 0
         truly_missing = []
+        excluded_due_to_quality = []
 
         # Seřazení pro lepší progress tracking
         missing_list = sorted(list(missing_samples))
@@ -386,14 +498,23 @@ class SampleGapFiller:
             else:
                 tqdm.write(f"\nGeneruji: {filename}")
 
-            # Hledání zdrojového vzorku
+            # Hledání zdrojového vzorku POUZE z kvalitních not
             source_sample, semitone_distance = self.find_source_sample(
-                midi, velocity, sample_rate, existing_samples
+                midi, velocity, sample_rate, existing_samples, good_midi_notes
             )
 
             if source_sample is None:
-                self.progress_mgr.warning(f"Nelze najít zdroj pro {filename}")
-                truly_missing.append(filename)
+                # Zkontroluj, zda by se našel zdroj bez omezení kvality
+                source_any, _ = self.find_source_sample_any_quality(
+                    midi, velocity, sample_rate, existing_samples
+                )
+
+                if source_any is not None:
+                    self.progress_mgr.warning(f"Vyloučeno kvůli kvalitě: {filename}")
+                    excluded_due_to_quality.append(filename)
+                else:
+                    self.progress_mgr.warning(f"Nelze najít žádný zdroj pro: {filename}")
+                    truly_missing.append(filename)
                 continue
 
             # Výpočet transpozice
@@ -437,63 +558,169 @@ class SampleGapFiller:
                 self.progress_mgr.error(f"Chyba při ukládání {filename}: {e}")
                 truly_missing.append(filename)
 
-        return generated_count, truly_missing
+        return generated_count, truly_missing, excluded_due_to_quality
 
-    def save_missing_report(self, missing_samples):
+    def find_source_sample_any_quality(self, target_midi, target_velocity, target_sr, existing_samples):
+        """Pomocná metoda pro kontrolu dostupnosti zdrojů bez omezení kvality"""
+        for distance in range(1, self.MAX_TRANSPOSE_DISTANCE + 1):
+            # Dolů
+            source_midi = target_midi - distance
+            key = (source_midi, target_velocity, target_sr)
+            if key in existing_samples:
+                return existing_samples[key], -distance
+
+            # Nahoru
+            source_midi = target_midi + distance
+            key = (source_midi, target_velocity, target_sr)
+            if key in existing_samples:
+                return existing_samples[key], distance
+
+        # Druhý sample rate
+        other_sr = 48000 if target_sr == 44100 else 44100
+        for distance in range(1, self.MAX_TRANSPOSE_DISTANCE + 1):
+            source_midi = target_midi - distance
+            key = (source_midi, target_velocity, other_sr)
+            if key in existing_samples:
+                return existing_samples[key], -distance
+
+            source_midi = target_midi + distance
+            key = (source_midi, target_velocity, other_sr)
+            if key in existing_samples:
+                return existing_samples[key], distance
+
+        return None, 0
+
+    def copy_quality_originals(self, existing_samples, good_midi_notes, excluded_midi_notes):
+        """Fáze 4: Kopírování kvalitních originálních vzorků"""
+        self.progress_mgr.section("FÁZE 4: Kopírování originálů")
+
+        copied_count = 0
+        excluded_count = 0
+
+        # Filtrování vzorků podle kvality
+        good_samples = []
+        for sample_info in existing_samples.values():
+            if sample_info.midi in good_midi_notes:
+                good_samples.append(sample_info)
+            else:
+                excluded_count += 1
+
+        if not good_samples:
+            self.progress_mgr.warning("Žádné kvalitní vzorky ke kopírování!")
+            return 0, excluded_count
+
+        self.progress_mgr.info(f"Kopíruji {len(good_samples)} kvalitních originálů")
+        self.progress_mgr.info(f"Vylučuji {excluded_count} vzorků kvůli nízké kvalitě")
+
+        iterator = good_samples if self.verbose else tqdm(good_samples, desc="Kopíruji originály", unit="soubor")
+
+        for sample_info in iterator:
+            source_path = sample_info.filepath
+            dest_path = self.output_dir / source_path.name
+
+            try:
+                # Přeskoč pokud již existuje (může být vygenerovaný)
+                if dest_path.exists():
+                    self.progress_mgr.debug(f"Přeskakuji existující: {dest_path.name}")
+                    continue
+
+                shutil.copy2(source_path, dest_path)
+                copied_count += 1
+
+                if self.verbose:
+                    print(f"Zkopírován: {source_path.name}")
+
+            except Exception as e:
+                self.progress_mgr.error(f"Chyba při kopírování {source_path.name}: {e}")
+
+        return copied_count, excluded_count
+
+    def save_missing_report(self, missing_samples, excluded_due_to_quality=None):
         """Uložení reportu o vzorcích, které se nepodařilo vygenerovat"""
-        if not missing_samples:
+        if not missing_samples and not excluded_due_to_quality:
             return
 
         report_path = self.output_dir / "missing-notes.txt"
 
         try:
             with open(report_path, 'w', encoding='utf-8') as f:
-                f.write("# Vzorky které nebylo možné vygenerovat\n")
-                f.write("# Doporučuje se nasamplovat ručně\n\n")
+                f.write("# Report chybějících vzorků\n")
+                f.write("# Vygenerováno Sample Gap Filler s quality-aware algoritmem\n\n")
 
-                for filename in sorted(missing_samples):
-                    f.write(f"{filename}\n")
+                if missing_samples:
+                    f.write("## Vzorky které nebylo možné vygenerovat\n")
+                    f.write("# Doporučuje se nasamplovat ručně\n\n")
+                    for filename in sorted(missing_samples):
+                        f.write(f"{filename}\n")
 
-            self.progress_mgr.warning(f"Report chybějících vzorků uložen: {report_path}")
+                if excluded_due_to_quality:
+                    f.write("\n## Vzorky vyloučené kvůli nízké kvalitě zdrojů\n")
+                    f.write("# Mohly by se vygenerovat, ale pouze z nekvalitních not\n\n")
+                    for filename in sorted(excluded_due_to_quality):
+                        f.write(f"{filename}\n")
+
+            self.progress_mgr.warning(f"Report uložen: {report_path}")
 
         except Exception as e:
             self.progress_mgr.error(f"Chyba při ukládání reportu: {e}")
 
     def process_all(self):
-        """Hlavní pipeline zpracování"""
+        """Hlavní pipeline zpracování s quality-aware algoritmem"""
         print(f"Vstupní adresář: {self.input_dir}")
         print(f"Výstupní adresář: {self.output_dir}")
         print(f"MIDI rozsah: {self.MIDI_MIN}-{self.MIDI_MAX}")
         print(f"Velocity layers: {self.VELOCITY_MIN}-{self.VELOCITY_MAX}")
         print(f"Max transpozice: ±{self.MAX_TRANSPOSE_DISTANCE} půltóny")
+        print(f"Quality threshold: {self.quality_threshold*100:.0f}% (Paretovo pravidlo)")
         print(f"Cílové sample rates: {self.TARGET_SAMPLE_RATES}")
         print(f"Verbose režim: {'ZAPNUT' if self.verbose else 'VYPNUT'}")
 
         try:
             # Fáze 1: Skenování existujících vzorků
-            existing_samples = self.scan_existing_samples()
+            existing_samples, samples_by_midi = self.scan_existing_samples()
             if not existing_samples:
                 return
+
+            # Fáze 1.5: Analýza kvality vzorků
+            good_midi_notes, excluded_midi_notes, quality_stats = self.quality_analyzer.analyze_note_quality(
+                samples_by_midi, self.quality_threshold
+            )
 
             # Fáze 2: Analýza pokrytí
             missing_samples = self.analyze_coverage(existing_samples)
 
-            # Fáze 3: Doplňování chybějících vzorků
-            generated_count, truly_missing = self.fill_gaps(missing_samples, existing_samples)
+            # Fáze 3: Doplňování chybějících vzorků (pouze z kvalitních zdrojů)
+            generated_count, truly_missing, excluded_due_to_quality = self.fill_gaps(
+                missing_samples, existing_samples, good_midi_notes, excluded_midi_notes
+            )
 
-            # Fáze 4: Report nedostupných vzorků
-            if truly_missing:
-                self.save_missing_report(truly_missing)
+            # Fáze 4: Kopírování kvalitních originálů
+            copied_count, excluded_originals = self.copy_quality_originals(
+                existing_samples, good_midi_notes, excluded_midi_notes
+            )
+
+            # Fáze 5: Report nedostupných vzorků
+            if truly_missing or excluded_due_to_quality:
+                self.save_missing_report(truly_missing, excluded_due_to_quality)
 
             # Finální shrnutí
             self.progress_mgr.section("DOKONČENO")
             summary_lines = [
-                f"Vygenerováno: {generated_count} vzorků",
-                f"Nepodařilo se: {len(truly_missing)} vzorků",
+                f"Kvalitní analýza:",
+                f"  • Medián vzorků na notu: {quality_stats.get('median', 0):.1f}",
+                f"  • Kvalitních not: {quality_stats.get('good_count', 0)}",
+                f"  • Vyloučených not: {quality_stats.get('excluded_count', 0)}",
+                f"",
+                f"Výsledky:",
+                f"  • Vygenerováno: {generated_count} vzorků",
+                f"  • Zkopírováno originálů: {copied_count} vzorků",
+                f"  • Vyloučeno kvůli kvalitě: {len(excluded_due_to_quality)} vzorků",
+                f"  • Nelze vygenerovat: {len(truly_missing)} vzorků",
+                f"",
                 f"Výstupní adresář: {self.output_dir}"
             ]
 
-            if truly_missing:
+            if truly_missing or excluded_due_to_quality:
                 summary_lines.append(f"Viz report: missing-notes.txt")
 
             for line in summary_lines:
@@ -511,20 +738,23 @@ class SampleGapFiller:
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="""Program pro doplňování chybějících vzorků transpozicí z nejbližších dostupných.
+        description="""Program pro doplňování chybějících vzorků transpozicí z nejbližších dostupných
+s quality-aware algoritmem.
 
         Klíčové funkce:
-        - Indexování existujících vzorků podle názvu (m{midi:03d}-vel{velocity}-f{sr}.wav)
+        - Indexování existujících vzorků podle názvu (m{midi:03d}-vel{velocity}-f{sr}[-next{N}].wav)
+        - Quality-aware analýza: více vzorků = lepší kvalita (častěji samplované noty)
+        - Paretovo pravidlo pro vyřazení nejhorších not z transpozice
         - Analýza pokrytí MIDI rozsahu 21-108 (A0-C8) pro velocity layers 0-7
-        - Generování chybějících vzorků transpozicí z nejbližších (±3 půltóny max)
+        - Generování chybějících vzorků transpozicí POUZE z kvalitních zdrojů
         - Priorita směru transpozice: dolů (-1, -2, -3), pak nahoru (+1, +2, +3)
-        - Export pro oba sample rates (44.1kHz + 48kHz)
-        - Report nedostupných vzorků do missing-notes.txt
+        - Kopírování kvalitních originálů + export pro oba sample rates (44.1kHz + 48kHz)
+        - Detailní report vyloučených vzorků do missing-notes.txt
 
         Navazuje na Pitch Corrector a používá stejné metody transpozice.
 
         Příklad použití:
-        python sample_gap_filler.py --input-dir ./processed_samples --output-dir ./complete_samples --verbose
+        python sample_gap_filler.py --input-dir ./processed_samples --output-dir ./complete_samples --quality-threshold 0.8 --verbose
         """,
         formatter_class=argparse.RawTextHelpFormatter
     )
@@ -533,6 +763,8 @@ def parse_args():
                         help='Cesta k adresáři s existujícími vzorky (výstup z Pitch Corrector)')
     parser.add_argument('--output-dir', required=True,
                         help='Cesta k výstupnímu adresáři pro doplněné vzorky')
+    parser.add_argument('--quality-threshold', type=float, default=0.8,
+                        help='Paretovo pravidlo pro kvalitu (0.8 = ponechá top 80%%, vyřadí spodních 20%% not)')
     parser.add_argument('--verbose', action='store_true',
                         help='Podrobný výstup pro debugging (vypne progress bary)')
 
@@ -542,15 +774,21 @@ def parse_args():
 if __name__ == "__main__":
     args = parse_args()
 
-    print("=== SAMPLE GAP FILLER ===")
+    print("=== SAMPLE GAP FILLER s QUALITY-AWARE ALGORITMEM ===")
     print("Doplňování chybějících vzorků pro IthacaSampler")
-    print("Transpozice z nejbližších dostupných vzorků")
-    print("=" * 50)
+    print("Transpozice pouze z kvalitních vzorků (Paretovo pravidlo)")
+    print("=" * 60)
+
+    # Validace quality threshold
+    if not (0.1 <= args.quality_threshold <= 1.0):
+        print("CHYBA: Quality threshold musí být mezi 0.1 a 1.0")
+        sys.exit(1)
 
     try:
         filler = SampleGapFiller(
             input_dir=args.input_dir,
             output_dir=args.output_dir,
+            quality_threshold=args.quality_threshold,
             verbose=args.verbose
         )
 
