@@ -1,46 +1,60 @@
-# Sample Gap Filler
-
-Program pro doplňování chybějících zvukových vzorků hudebních nástrojů transpozicí z nejbližších dostupných vzorků.
-Navazuje na Pitch Corrector a používá stejné principy zpracování audio dat. Určen pro IthacaSampler.
+# Sample Gap Filler s Quality-Aware Algoritmem
 
 ## Popis
+Tento program doplňuje chybějící audio vzorky hudebních nástrojů transpozicí z nejbližších dostupných vzorků. Používá quality-aware algoritmus založený na Paretově pravidle: analyzuje kvalitu not podle počtu vzorků (více vzorků = lepší kvalita) a transponuje pouze z kvalitních zdrojů. Navazuje na nástroj Pitch Corrector a sdílí principy zpracování audio (simple pitch shifting pomocí resample).
 
-- **Funkce**:
-  - Skenuje existující WAV soubory v input_dir (očekávaný formát: `m{MIDI:03d}-vel{velocity}-f{44|48}.wav`, např. `m060-vel4-f44.wav` pro 44.1 kHz nebo `m062-vel7-f48.wav` pro 48 kHz).
-  - Analyzuje pokrytí MIDI rozsahu 21–108 (A0–C8) pro velocity layers 0–7 a sample rates 44.1 kHz / 48 kHz.
-  - Doplňuje chybějící vzorky transpozicí (pitch shift) z nejbližších existujících (±3 půltóny max), s prioritou směru dolů.
-  - Generuje výstup do output_dir ve stejném formátu.
-  - Ukládá report nedoplňitelných vzorků do `missing-notes.txt` (doporučeno nasamplovat ručně).
+Klíčové funkce:
+- Skenování existujících WAV souborů v specifickém formátu: `m{midi:03d}-vel{velocity}-f{44|48}[-next{N}].wav`.
+- Analýza kvality: Vyřadí spodních X% not s nejmenším počtem vzorků (např. 20% při threshold 0.8).
+- Analýza pokrytí MIDI rozsahu 21-108 (A0-C8) pro velocity layers 0-7 a sample rates 44.1kHz/48kHz.
+- Generování chybějících vzorků transpozicí (±1 až ±3 půltóny, priorita dolů).
+- Kopírování kvalitních originálních vzorků do výstupu.
+- Report chybějících/vyloučených vzorků v `missing-notes.txt`.
 
-- **Závislosti**: Python 3.12+, knihovny: `soundfile`, `numpy`, `resampy`, `tqdm`, `re`, `pathlib`, `argparse`, `sys`, `collections`.
+Program je určen pro přípravu vzorků pro IthacaSampler. Autor: Doplňkový program pro IthacaSampler. Datum: 2025.
+
+## Požadavky
+- Python 3.12+
+- Knihovny: `soundfile`, `numpy`, `resampy`, `tqdm`, `re`, `sys`, `shutil`, `argparse`, `collections`, `pathlib`.
+- Žádný internet – vše offline.
 
 ## Instalace
-
-1. Nainstalujte Python 3.12+.
+1. Nainstalujte Python 3.12.
 2. Nainstalujte závislosti příkazem:
    ```
    pip install soundfile numpy resampy tqdm
    ```
    (Ostatní knihovny jsou standardní.)
 
+3. Stáhněte nebo zkopírujte skript `sample_gap_filler.py`.
+
 ## Použití
-
-Spusťte skript s argumenty:
+Spusťte skript s argumenty přes příkazovou řádku:
 
 ```
-python sample_gap_filler.py --input-dir CESTA_K_VSTUPU --output-dir CESTA_K_VYSTUPU [--verbose]
+python sample_gap_filler.py --input-dir CESTA_K_VSTUPU --output-dir CESTA_K_VYSTUPU [volitelné argumenty]
 ```
 
-- `--input-dir`: Cesta k adresáři s existujícími vzorky (výstup z Pitch Corrector).
-- `--output-dir`: Cesta k výstupnímu adresáři (bude vytvořen, pokud neexistuje).
-- `--verbose`: Volitelný, zapne podrobný výstup (vypne progress bary).
-
-**Příklad**:
+Příklad:
 ```
-python sample_gap_filler.py --input-dir ./processed_samples --output-dir ./complete_samples --verbose
+python sample_gap_filler.py --input-dir ./processed_samples --output-dir ./complete_samples --quality-threshold 0.8 --verbose
 ```
 
-## Poznámky
+### Argumenty
+- `--input-dir` (povinný): Cesta k adresáři s existujícími vzorky (výstup z Pitch Corrector).
+- `--output-dir` (povinný): Cesta k výstupnímu adresáři (bude vytvořen, pokud neexistuje).
+- `--quality-threshold` (volitelný, default: 0.8): Prah kvality (0.1-1.0) – ponechá top X% not podle počtu vzorků.
+- `--verbose` (volitelný): Podrobný výstup (vypne progress bary).
 
-- Program používá jednoduchý pitch shift (změna sample rate), který mění délku vzorku – vhodné pro samplery.
-- Pokud nelze najít zdrojový vzorek v rozsahu ±3 půltónů, vzorek se nedoplní a zapíše do reportu.
+Program projde fázemi: skenování, analýza kvality, analýza pokrytí, generování, kopírování. Výstup obsahuje shrnutí a report.
+
+## Konfigurace
+- MIDI rozsah: 21-108 (nelze měnit bez úpravy kódu).
+- Max transpozice: ±3 půltóny.
+- Cílové sample rates: 44.1kHz a 48kHz.
+- Pokud potřebujete změny (např. jiné rozsahy), upravte konstanty v třídě `SampleGapFiller`.
+
+## Výstup
+- Doplněné vzorky v `--output-dir` ve formátu `m{midi:03d}-vel{velocity}-f{44|48}.wav`.
+- Report `missing-notes.txt`: Seznam vzorků, které se nepodařilo vygenerovat nebo byly vyloučeny kvůli kvalitě.
+- Konzolový výstup: Statistiky (např. vygenerováno X vzorků, vyloučeno Y).
