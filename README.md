@@ -1,61 +1,364 @@
-# Sample Gap Filler s Quality-Aware Algoritmem
+# Simple Sample Gap Filler
 
-## Popis
-Tento program doplňuje chybějící audio vzorky hudebních nástrojů transpozicí z nejbližších dostupných vzorků. 
-Používá quality-aware algoritmus založený na Paretově pravidle: 
-analyzuje kvalitu not podle počtu vzorků (více vzorků = lepší kvalita) a transponuje pouze z kvalitních zdrojů. 
-Navazuje na nástroj Pitch Corrector a sdílí principy zpracování audio (simple pitch shifting pomocí resample).
+**Verze 3.0 - Kompletně přepsaný a zjednodušený**
 
-Klíčové funkce:
-- Skenování existujících WAV souborů v specifickém formátu: `m{midi:03d}-vel{velocity}-f{44|48}[-next{N}].wav`.
-- Analýza kvality: Vyřadí spodních X% not s nejmenším počtem vzorků (např. 20% při threshold 0.8).
-- Analýza pokrytí MIDI rozsahu 21-108 (A0-C8) pro velocity layers 0-7 a sample rates 44.1kHz/48kHz.
-- Generování chybějících vzorků transpozicí (±1 až ±3 půltóny, priorita dolů).
-- Kopírování kvalitních originálních vzorků do výstupu.
-- Report chybějících/vyloučených vzorků v `missing-notes.txt`.
+Jednoduchý program pro automatické doplňování chybějících vzorků hudebních nástrojů transpozicí z nejbližších dostupných vzorků. Vybírá vždy **NEJBLIŽŠÍ** dostupnou notu bez ohledu na směr.
 
-## Požadavky
-- Python 3.12+
-- Knihovny: `soundfile`, `numpy`, `resampy`, `tqdm`, `re`, `sys`, `shutil`, `argparse`, `collections`, `pathlib`.
-- Žádný internet – vše offline.
+## 🎯 Účel
 
-## Instalace
-1. Nainstalujte Python 3.12.
-2. Nainstalujte závislosti příkazem:
-   ```
-   pip install soundfile numpy resampy tqdm
-   ```
-   (Ostatní knihovny jsou standardní.)
+Když máte neúplnou sadu vzorků hudebního nástroje, tento nástroj automaticky vygeneruje chybějící noty transpozicí z nejbližších existujících vzorků. Ideální pro:
 
-3. Stáhněte nebo zkopírujte skript `sample_gap_filler.py`.
+- Doplnění chybějících not v sample knihovnách
+- Rozšíření MIDI rozsahu nástrojů
+- Příprava kompletních sad pro IthacaSampler
+- Rychlé a jednoduché zpracování vzorků
 
-## Použití
-Spusťte skript s argumenty přes příkazovou řádku:
+## ✨ Co je nového ve verzi 3.0
 
-```
-python sample_gap_filler.py --input-dir CESTA_K_VSTUPU --output-dir CESTA_K_VYSTUPU [volitelné argumenty]
-```
+### 🔄 **Kompletní přepis**
+- **Jednodušší kód** - odstranění zbytečných složitostí
+- **Čistší logika** - méně tříd, jasnější flow
+- **Lepší error handling** - opraveny syntaxe chyby
 
-Příklad:
-```
-python sample_gap_filler.py --input-dir ./processed_samples --output-dir ./complete_samples --quality-threshold 0.8 --verbose
+### 🎵 **Zjednodušený výběr zdroje**
+- **Nejbližší dostupná nota** - prostě podle nejmenší vzdálenosti
+- **Žádné složité priority** - dolů/nahoru logika odstraněna
+- **Rychlejší hledání** - méně složitých podmínek
+
+### 🛠️ **Pouze librosa**
+- **Povinná librosa** - odstraněny problematické alternativy
+- **Konzistentní kvalita** - vše přes jednu knihovnu
+- **Žádné konflikty** - končí s duplikáty bez změn
+
+## 📋 Požadavky
+
+### Povinná závislost
+```bash
+pip install librosa soundfile numpy tqdm
 ```
 
-### Argumenty
-- `--input-dir` (povinný): Cesta k adresáři s existujícími vzorky (výstup z Pitch Corrector).
-- `--output-dir` (povinný): Cesta k výstupnímu adresáři (bude vytvořen, pokud neexistuje).
-- `--quality-threshold` (volitelný, default: 0.8): Prah kvality (0.1-1.0) – ponechá top X% not podle počtu vzorků.
-- `--verbose` (volitelný): Podrobný výstup (vypne progress bary).
+**Poznámka:** librosa je nyní povinná a program se odmítne spustit bez ní.
 
-Program projde fázemi: skenování, analýza kvality, analýza pokrytí, generování, kopírování. Výstup obsahuje shrnutí a report.
+## 🚀 Instalace a použití
 
-## Konfigurace
-- MIDI rozsah: 21-108 (nelze měnit bez úpravy kódu).
-- Max transpozice: ±3 půltóny.
-- Cílové sample rates: 44.1kHz a 48kHz.
-- Pokud potřebujete změny (např. jiné rozsahy), upravte konstanty v třídě `SampleGapFiller`.
+### 1. Základní použití
+```bash
+python sample-gap.py --input-dir ./processed_samples --output-dir ./complete_samples
+```
 
-## Výstup
-- Doplněné vzorky v `--output-dir` ve formátu `m{midi:03d}-vel{velocity}-f{44|48}.wav`.
-- Report `missing-notes.txt`: Seznam vzorků, které se nepodařilo vygenerovat nebo byly vyloučeny kvůli kvalitě.
-- Konzolový výstup: Statistiky (např. vygenerováno X vzorků, vyloučeno Y).
+### 2. Bez kopírování originálů
+```bash
+python sample-gap.py --input-dir ./processed_samples --output-dir ./complete_samples --no-copy
+```
+
+### 3. Verbose režim pro debugging
+```bash
+python sample-gap.py --input-dir ./processed_samples --output-dir ./complete_samples --verbose
+```
+
+### 4. Příklad pro Windows
+```bash
+python sample-gap.py --input-dir "C:\SoundBanks\IthacaPlayer\PianoP-tuned" --output-dir "C:\SoundBanks\IthacaPlayer\instrument"
+```
+
+## 📁 Konvence názvů souborů
+
+Program očekává soubory ve formátu:
+```
+m{midi:03d}-vel{velocity}-f{sample_rate}[-next{N}].wav
+```
+
+### Příklady:
+- `m060-vel3-f44.wav` - C4, velocity 3, 44.1kHz
+- `m072-vel5-f48.wav` - C5, velocity 5, 48kHz  
+- `m036-vel1-f44-next1.wav` - C2, velocity 1, 44.1kHz, duplicita 1
+
+### Parametry:
+- **midi**: 000-127 (MIDI číslo noty)
+- **velocity**: 0-7 (velocity layer)
+- **sample_rate**: 44 (=44100Hz) nebo 48 (=48000Hz)
+- **next**: Volitelný index duplicity (1, 2, 3...)
+
+## ⚙️ Parametry příkazové řádky
+
+| Parametr | Popis |
+|----------|-------|
+| `--input-dir` | Cesta k adresáři s existujícími vzorky (povinné) |
+| `--output-dir` | Cesta k výstupnímu adresáři (povinné) |
+| `--no-copy` | Nekopírovat originální vzorky |
+| `--verbose` | Podrobný výstup pro debugging |
+
+## 🔄 Jak to funguje
+
+### **1. Skenování vzorků**
+- Načte všechny WAV soubory podle konvence názvů
+- Ignoruje soubory s neplatným formátem názvu
+- Zobrazí statistiky načtených vzorků
+
+### **2. Analýza pokrytí**
+- Vypočte požadované vzorky (21-108 MIDI × 0-7 velocity × 2 sample rates)
+- Identifikuje chybějící kombinace
+- Zobrazí přehled co je potřeba vygenerovat
+
+### **3. Generování vzorků**
+- Pro každý chybějící vzorek najde **nejbližší dostupný zdroj**
+- Aplikuje pitch shift pro dosažení cílové noty
+- Konvertuje sample rate pokud je potřeba
+- Uloží vygenerovaný vzorek
+
+### **4. Kopírování originálů**
+- Zkopíruje všechny originální vzorky do výstupního adresáře
+- Přeskočí již existující soubory
+- Volitelné (lze vypnout pomocí `--no-copy`)
+
+## 🎛️ Logika výběru zdroje
+
+### **Jednoduchý algoritmus**
+```python
+# Najde vzorek s nejmenší vzdáleností od cíle
+distance = abs(source_midi - target_midi)
+if distance <= MAX_TRANSPOSE:  # max ±3 půltóny
+    use_this_source()
+```
+
+### **Priority při hledání**
+1. **Stejný velocity + sample rate** s nejmenší vzdáleností
+2. **Jiný velocity + stejný sample rate** s nejmenší vzdáleností  
+3. **Jakýkoliv** s nejmenší vzdáleností
+
+### **Bez složitých pravidel**
+- ❌ Žádné "dolů má prioritu před nahoru"
+- ❌ Žádné složité fallbacky
+- ✅ Prostě nejbližší dostupná nota
+
+## 📊 Výstupní formáty
+
+### **Generované vzorky**
+- Zachován originální formát (mono/stereo)
+- Stejná délka jako zdrojový vzorek
+- Cílový sample rate (44.1kHz nebo 48kHz)
+- Vysoká kvalita zpracování přes librosa
+
+### **Report soubory**
+```
+missing-samples.txt    # Seznam vzorků, které nebylo možné vygenerovat
+```
+
+## 🔧 Konfigurační konstanty
+
+```python
+MIDI_RANGE = (21, 108)        # A0 - C8
+VELOCITY_RANGE = (0, 7)       # Velocity layers
+SAMPLE_RATES = [44100, 48000] # Podporované sample rates
+MAX_TRANSPOSE = 3             # ±3 půltóny max transpozice
+```
+
+## 📈 Příklad workflow
+
+```bash
+# 1. Zpracování vzorků Pitch Correctorem (předchozí krok)
+python pitch_corrector.py --input-dir ./raw_samples --output-dir ./processed_samples
+
+# 2. Doplnění chybějících vzorků (NOVÁ VERZE)
+python sample-gap.py --input-dir ./processed_samples --output-dir ./complete_samples
+
+# 3. Kontrola výsledků
+ls -la ./complete_samples/
+cat ./complete_samples/missing-samples.txt
+```
+
+## 🐛 Troubleshooting
+
+### **Chyba: librosa není k dispozici**
+```bash
+pip install librosa
+```
+
+### **Verbose režim**
+Při problémech použijte `--verbose` pro detailní výstup:
+```bash
+python sample-gap.py --input-dir ./input --output-dir ./output --verbose
+```
+
+### **Časté problémy:**
+
+**Nerozpoznané názvy souborů**
+- Zkontrolujte formát názvů: `m{midi:03d}-vel{velocity}-f{sr}.wav`
+- MIDI musí být 3 cifry: `m060`, ne `m60`
+
+**Syntaxe chyba**
+- Používejte uvozovky pro cesty s mezerami
+- Windows: `"C:\Path With Spaces\folder"`
+
+**Nedostatečné zdroje**
+- Zkontrolujte `missing-samples.txt` pro seznam nedostupných vzorků
+- Zvažte rozšíření `MAX_TRANSPOSE` v kódu
+
+## ⚡ Výhody verze 3.0
+
+### **Rychlost**
+- ✅ Jednodušší algoritmus = rychlejší zpracování
+- ✅ Méně podmínek při hledání zdroje
+- ✅ Přímočařejší logika
+
+### **Spolehlivost**
+- ✅ Pouze librosa = konzistentní kvalita
+- ✅ Žádné konflikty mezi knihovnami
+- ✅ Opravené syntaxe chyby
+
+### **Jednoduchost**
+- ✅ Méně parametrů = méně možností pro chyby
+- ✅ Čistší kód = snadnější údržba
+- ✅ Jasná logika = předvídatelné výsledky
+
+## 🔗 Související nástroje
+
+- **Pitch Corrector** - Předchozí krok v pipeline
+- **IthacaSampler** - Cílová aplikace pro vzorky
+
+## 📝 Changelog
+
+### **Verze 3.0 (Aktuální)**
+- ✅ **KOMPLETNÍ PŘEPIS** - zjednodušená architektura
+- ✅ **Nejbližší nota** - odstraněna složitá logika směru
+- ✅ **Pouze librosa** - žádné problematické alternativy
+- ✅ **Opravené syntaxe** - odstraněna syntax error
+- ✅ **Čistší API** - `--no-copy` místo `--do-not-copy-source`
+
+### **Verze 2.x** (Zastaralé)
+- Složitá logika výběru zdroje
+- Problematický resampy modul
+- Zbytečné parametry
+
+## 📄 Licence
+
+Tento software je poskytován "jak je" pro použití s IthacaSampler. Použití na vlastní riziko.
+
+---
+
+**💡 Tip:** Verze 3.0 je navržena pro jednoduchost a spolehlivost. Pokud potřebujete pokročilé funkce, můžete upravit konstanty v kódu.ocity}-f{sample_rate}[-next{N}].wav
+```
+
+### Příklady:
+- `m060-vel3-f44.wav` - C4, velocity 3, 44.1kHz
+- `m072-vel5-f48.wav` - C5, velocity 5, 48kHz  
+- `m036-vel1-f44-next1.wav` - C2, velocity 1, 44.1kHz, duplicita 1
+- `m084-vel7-f48-next2.wav` - C6, velocity 7, 48kHz, duplicita 2
+
+### Parametry:
+- **midi**: 000-127 (MIDI číslo noty)
+- **velocity**: 0-7 (velocity layer)
+- **sample_rate**: 44 (=44100Hz) nebo 48 (=48000Hz)
+- **next**: Volitelný index duplicity (1, 2, 3...)
+
+## ⚙️ Parametry příkazové řádky
+
+| Parametr | Popis |
+|----------|-------|
+| `--input-dir` | Cesta k adresáři s existujícími vzorky (povinné) |
+| `--output-dir` | Cesta k výstupnímu adresáři (povinné) |
+| `--do-not-copy-source` | Nekopírovat originální vzorky |
+| `--use-librosa` | Použít librosa pro pitch shifting |
+| `--verbose` | Podrobný výstup pro debugging |
+
+## 🔄 Fáze zpracování
+
+### **Fáze 1: Skenování existujících vzorků**
+- Indexování všech WAV souborů podle konvence názvů
+- Detekce duplicitů a variant
+- Statistiky pokrytí
+
+### **Fáze 2: Analýza pokrytí**
+- Výpočet požadovaných vzorků (21-108 MIDI × 0-7 velocity × 2 sample rates)
+- Identifikace chybějících vzorků
+- Pokrytí podle velocity layerů
+
+### **Fáze 3: Generování chybějících vzorků**
+- Hledání nejbližšího dostupného zdroje
+- Transpozice pomocí pitch shiftingu
+- Konverze sample rate (pokud potřeba)
+- Uložení vygenerovaných vzorků
+
+### **Fáze 4: Kopírování originálů**
+- Kopírování existujících vzorků do výstupního adresáře
+- Přeskočení již existujících souborů
+
+### **Fáze 5: Report**
+- Vytvoření `missing-notes.txt` s nedostupnými vzorky
+- Finální statistiky
+
+## 🎛️ Algoritmy pitch shiftingu
+
+### **Jednoduchý algoritmus (výchozí)**
+- **Rychlý** a bez dalších závislostí
+- Lineární interpolace s time-stretching
+- Vhodný pro většinu případů použití
+
+### **Librosa algoritmus (--use-librosa)**
+- **Vyšší kvalita** zpracování
+- Pokročilé algoritmy pro zachování kvality
+- Vyžaduje `pip install librosa`
+
+## 📊 Výstupní formáty
+
+### **Generované vzorky**
+- Zachován originální formát (mono/stereo)
+- Stejná délka jako zdrojový vzorek
+- Cílový sample rate (44.1kHz nebo 48kHz)
+
+### **Report soubory**
+```
+missing-notes.txt    # Seznam vzorků, které nebylo možné vygenerovat
+```
+
+## 🔧 Konfigurační konstanty
+
+```python
+MIDI_MIN = 21              # A0
+MIDI_MAX = 108             # C8  
+VELOCITY_MIN = 0           # Nejnižší velocity layer
+VELOCITY_MAX = 7           # Nejvyšší velocity layer
+MAX_TRANSPOSE_DISTANCE = 3 # ±3 půltóny max transpozice
+TARGET_SAMPLE_RATES = [44100, 48000]
+```
+
+## 📈 Příklad workflow
+
+```bash
+# 1. Zpracování vzorků Pitch Correctorem (předchozí krok)
+python pitch_corrector.py --input-dir ./raw_samples --output-dir ./processed_samples
+
+# 2. Doplnění chybějících vzorků
+python sample_gap_filler.py --input-dir ./processed_samples --output-dir ./complete_samples
+
+# 3. Kontrola výsledků
+ls -la ./complete_samples/
+cat ./complete_samples/missing-notes.txt
+```
+
+## 🐛 Troubleshooting
+
+### **Verbose režim**
+Při problémech použijte `--verbose` pro detailní výstup:
+```bash
+python sample_gap_filler.py --input-dir ./input --output-dir ./output --verbose
+```
+
+### **Časté problémy:**
+
+**Nerozpoznané názvy souborů**
+- Zkontrolujte formát názvů: `m{midi:03d}-vel{velocity}-f{sr}.wav`
+- MIDI musí být 3 cifry: `m060`, ne `m60`
+
+**Chybí librosa**
+- Program automaticky použije jednoduchý algoritmus
+- Pro instalaci: `pip install librosa`
+
+**Nedostatečné zdroje**
+- Zkontrolujte `missing-notes.txt` pro seznam nedostupných vzorků
+- Zvažte rozšíření `MAX_TRANSPOSE_DISTANCE`
+
+## 🔗 Související nástroje
+
+- **Pitch Corrector** - Předchozí krok v pipeline
+- **IthacaSampler** - Cílová aplikace pro vzorky
