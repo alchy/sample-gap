@@ -97,7 +97,7 @@ class GapFiller:
 
         self.input_dir = Path(input_dir)
         self.output_dir = Path(output_dir)
-        self.copy_originals = copy_originals
+        self.should_copy_originals = copy_originals  # Přejmenováno kvůli konfliktu s metodou
         self.verbose = verbose
 
         # Konstanty
@@ -321,7 +321,7 @@ class GapFiller:
 
     def copy_originals(self):
         """Kopírování originálních souborů"""
-        if not self.copy_originals:
+        if not self.should_copy_originals:
             print("Kopírování originálů přeskočeno")
             return
 
@@ -373,7 +373,7 @@ class GapFiller:
         print(f"Velocity: {self.VELOCITY_RANGE[0]}-{self.VELOCITY_RANGE[1]}")
         print(f"Sample rates: {self.SAMPLE_RATES}")
         print(f"Max transpozice: ±{self.MAX_TRANSPOSE} půltónů")
-        print(f"Kopírovat originály: {'ANO' if self.copy_originals else 'NE'}")
+        print(f"Kopírovat originály: {'ANO' if self.should_copy_originals else 'NE'}")
         print("=" * 50)
 
         try:
